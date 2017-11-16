@@ -1,0 +1,379 @@
+&do_flash=0
+
+SYSTEM.Reset
+SYStem.JtagClock 10MHz
+SYS.CPU CortexR4
+
+SYStem.Option ResBreak OFF
+SYStem.Option.TRST ON
+
+SYStem.CONFIG COREDEBUG Base DAP:0x801E0000
+break.IMPLementation Program Onchip
+
+sys.attach
+
+wait 100ms
+
+break
+
+GOSUB wdt_disable
+
+IF &do_flash==1
+(
+	sys.Option.INTDIS ON
+	GOSUB cmu_init
+	GOSUB mpu_init
+
+	AREA.Clear
+	AREA.View	
+loop:
+	PRINT "Please select option"
+	PRINT "1. Read partition to file"
+	PRINT "2. Program partition"
+	PRINT "3. Erase partition"
+	PRINT "4. Protect flash"
+	PRINT "5. Unprotect flash"
+	PRINT "9. Erase whole flash"
+	PRINT ""
+
+	ENTER &mode
+
+	IF &mode==1
+	(
+		LOCAL &start &size &ro
+		GOSUB select_partition
+		RETURNVALUES &start &size &ro
+		GOSUB flash_read &start &size "part_&start.bin"		
+	)
+	ELSE IF &mode==2
+	(
+		LOCAL &start &size &ro
+		GOSUB select_partition
+		RETURNVALUES &start &size &ro
+		IF &ro!=0
+		(
+			PRINT "Partition is read only"
+		)
+		ELSE
+		(
+			LOCAL &filename
+			DIALOG.File *.*
+			ENTRY %Line &filename
+			IF FILE.EXIST(&filename)
+			(
+				GOSUB flash_write &start &size &filename
+			)
+		)
+	)
+	ELSE IF &mode==3
+	(
+		LOCAL &start &size &ro
+		GOSUB select_partition
+		RETURNVALUES &start &size &ro
+		IF &ro!=0
+		(
+			PRINT "Partition is read only"
+		)
+		ELSE
+		(
+			GOSUB flash_erase &start &size
+		)		
+	)
+	ELSE IF &mode==4
+	(
+		GOSUB flash_protect 1
+	)
+	ELSE IF &mode==5
+	(
+		GOSUB flash_protect 0
+	)
+	ELSE IF &mode==9
+	(
+		PRINT "Are you sure ? (y/N)"
+		PRINT ""
+		ENTER &1
+		PRINT "sure=&1"
+		IF ("&1"=="y")
+		(
+			GOSUB flash_chiperase
+		)
+	)
+
+	GOTO loop
+)
+
+; Disable watchdog
+
+enddo
+
+cmu_init:
+	d.set A:0x80081818 %Long 0x00000002
+	d.set A:0x8008181c %Long 0x00000001
+	d.set A:0x80081814 %Long 0x00000001
+	d.set A:0x80081804 %Long 0x00000000
+	d.set A:0x80081808 %Long 0x00000000
+	d.set A:0x8008180c %Long 0x00000000
+	d.set A:0x80081810 %Long 0x00000000
+	d.set A:0x80081800 %Long 0x00000003
+	d.set A:0x80080000 %Long 0x007f0000
+	d.set A:0x80080004 %Long 0x03104000
+	d.set A:0x80080014 %Long 0x1071bf00
+	d.set A:0x80081000 %Long 0x00000000
+	d.set A:0x8008100c %Long 0x00000000
+	d.set A:0x80080180 %Long 0x00000010
+	RETURN
+
+wdt_disable:
+	d.set A:0x80030000 %Long 0
+	RETURN
+
+mpu_init:
+	d.set C15:0x06020 %Long 0x0
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x1
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x2
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x3
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x4
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x5
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x6
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x7
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x8
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0x9
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0xA
+	d.set C15:0x06012 %Long 0x8
+	d.set C15:0x06020 %Long 0xB
+	d.set C15:0x06012 %Long 0x8
+
+	d.set C15:0x06020 %Long 0x0
+	d.set C15:0x06014 %Long 0x300
+	d.set C15:0x06012 %Long 0x3F
+	d.set C15:0x06010 %Long 0x0
+
+	d.set C15:0x06020 %Long 0x1
+	d.set C15:0x06014 %Long 0x0104
+	d.set C15:0x06012 %Long 0x37
+	d.set C15:0x06010 %Long 0x80000000
+
+	d.set C15:0x06020 %Long 0x4
+	d.set C15:0x06014 %Long 0x300
+	d.set C15:0x06012 %Long 0x3F
+	d.set C15:0x06010 %Long 0x60000000
+
+	d.set C15:0x01000 %Long 0x00e50879	
+
+	RETURN
+
+flash_poll:
+	LOCAL &tmp
+	&tmp=Data.Byte(A:0x803100dc)
+	WHILE (&tmp&1)!=0
+	(
+		WAIT 10.ms
+		&tmp=Data.Byte(A:0x803100dc)	
+	)
+	RETURN
+
+flash_enable_write:
+	LOCAL &sfcon
+	&sfcon=Data.Long(A:0x80310004)
+	PRINT "sfcon=&sfcon"
+	&sfcon=&sfcon|0x80000000
+	Data.Set A:0x80310004 %Long &sfcon
+	PRINT "sfcon=&sfcon"
+	RETURN
+
+flash_disable_write:
+	LOCAL &sfcon
+	&sfcon=Data.Long(A:0x80310004)
+	PRINT "sfcon=&sfcon"
+	&sfcon=&sfcon&0x7fffffff
+	Data.Set A:0x80310004 %Long &sfcon
+	PRINT "sfcon=&sfcon"
+	RETURN
+
+flash_protect:
+	ENTRY &mode
+	GOSUB flash_enable_write
+	DATA.Set A:0x803100EE %Byte 1
+	DATA.Set A:0x80310018 %Long 0xFF000000
+	DATA.Set A:0x80310018 %Long 0x00550000
+	DATA.Set A:0x80310018 %Long 0x00550300
+	IF &mode==1
+	(
+		PRINT "Protect flash"
+		DATA.Set A:0x80310018 %Long 0x0055F000
+		DATA.Set A:0x80310018 %Long 0x00553000
+	)
+	ELSE
+	(
+		PRINT "Unprotect flash"
+		DATA.Set A:0x80310018 %Long 0x00553000
+		DATA.Set A:0x80310018 %Long 0x00550000
+	)
+	DATA.Set A:0x80310018 %Long 0x00550000
+	DATA.Set A:0x80310018 %Long 0x0055C000
+	DATA.Set A:0x80310018 %Long 0xFF000000
+	GOSUB flash_disable_write
+	RETURN
+
+select_partition:
+	PRINT "Please choose partition"
+	PRINT "1. BL1"
+	PRINT "2. SSS R/O Key"
+	PRINT "3. BL2"
+	PRINT "4. SSS F/W"
+	PRINT "5. WLAN F/W"
+	PRINT "6. OS"
+	PRINT "7. Factory Reset"
+	PRINT "8. OTA download"
+	PRINT "9. USER R/W"
+	PRINT "10. WiFi NVRAM"
+	PRINT "11. SSS R/W key"
+	PRINT "other. Cancel"
+	PRINT ""
+	
+	ENTER &part
+	
+	IF &part==1
+	(
+		RETURN "0x04000000" "0x00004000" "0"
+	)
+	ELSE IF &part==2
+	(
+		RETURN "0x04004000" "0x0000C000" "1"
+	)
+	ELSE IF &part==3
+	(
+		RETURN "0x04010000" "0x00030000" "0"
+	)
+	ELSE IF &part==4
+	(
+		RETURN "0x04040000" "0x00008000" "0"
+	)
+	ELSE IF &part==5
+	(
+		RETURN "0x04048000" "0x00080000" "0"
+	)
+	ELSE IF &part==6
+	(
+		RETURN "0x040C8000" "0x00258000" "0"
+	)
+	ELSE IF &part==7
+	(
+		RETURN "0x04320000" "0x00180000" "0"
+	)
+
+	ELSE IF &part==8
+	(
+		RETURN "0x044A0000" "0x00180000" "0"
+	)
+	ELSE IF &part==9
+	(
+		RETURN "0x04620000" "0x0015E000" "0"
+	)
+	ELSE IF &part==10
+	(
+		RETURN "0x0477E000" "0x00002000" "1"
+	)
+	ELSE IF &part==11
+	(
+		RETURN "0x04780000" "0x00080000" "1"
+	)
+	
+	ENDDO
+
+flash_write:
+	ENTRY &start &size &file
+	PRINT "Flashing &file to partition at &start ..."
+	GOSUB flash_erase &start &size
+	GOSUB flash_enable_write
+	PRINT "Loading data at &start"
+	DATA.Load.Binary &file A:&start
+	PRINT "Data loaded"
+	GOSUB flash_disable_write
+	RETURN
+
+flash_read:
+	ENTRY &start &size &file
+	PRINT "Saving partition at &start to file &file ..."
+	LOCAL &end
+	&end=&start+&size
+	DATA.Save.Binary &file A:&start--&end
+	PRINT "Save complete"
+	RETURN
+
+flash_chiperase:
+	LOCAL &sfcon
+	&sfcon=(Data.Long(A:0x80310004)&(~(0x00000001<<4)))
+	Data.Set A:0x80310004 %Long &sfcon
+	IF ((Data.Byte(A:0x803100dc)&(1<<7))!=0)
+	(
+		PRINT "Flash is write protected"
+		ENDDO
+	)
+	PRINT "Erasing flash ..."
+	GOSUB flash_enable_write
+	Data.Set A:0x803100CE %Byte 0xFF
+	GOSUB flash_disable_write
+	GOSUB flash_poll
+	PRINT "Flash erase complete"
+	RETURN
+
+flash_erase:
+	ENTRY &start &size
+	LOCAL &flash_base
+	&flash_base=0x04000000
+	LOCAL &offset
+	&offset=&start-&flash_base
+	IF ((&offset+&size)>0x800000)
+	(
+		PRINT "Invalid range ..."
+		ENDDO
+	)
+	ELSE IF (&offset&0xfff)!=0
+	(
+		PRINT "Start address is not aligned to sector boundary."
+		ENDDO
+	)
+	ELSE IF (&size&0xfff)!=0
+	(
+		PRINT "Size is not aligned to sector boundary"
+		ENDDO
+	)
+	PRINT "Enable flash write"
+	GOSUB flash_enable_write
+	WHILE &size>0
+	(
+		LOCAL &cmd
+		LOCAL &unit
+		IF ((&offset&0xffff)==0&&(&size>0x10000))
+		(
+			&cmd=0x803100BE
+			&unit=0x10000
+		)
+		ELSE
+		(
+			&cmd=0x8031005E
+			&unit=0x1000
+		)
+		Data.Set A:0x80310010 %Long &offset
+		Data.Set A:&cmd %Byte 0xff
+		
+		PRINT "Erasing flash: &offset"
+	
+		&offset=&offset+&unit
+		&size=&size-&unit
+		GOSUB flash_poll
+	)
+	PRINT "Disable flash write"
+	GOSUB flash_disable_write
+	RETURN
